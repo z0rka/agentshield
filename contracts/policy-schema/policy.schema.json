@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentshield.io/contracts/policy-schema/policy.schema.json",
+  "title": "AgentShield security policy",
+  "description": "The declarative contract an agent is judged against. Every clause here is checkable by a deterministic evaluator from a trajectory alone - if a rule cannot be verified that way it does not belong in a policy.",
+  "type": "object",
+  "required": ["version", "target"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "string" },
+
+    "target": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_steps": { "type": "integer", "minimum": 1 },
+        "max_tool_calls": { "type": "integer", "minimum": 1 },
+        "max_duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "max_estimated_cost_usd": { "type": "number", "minimum": 0 },
+        "max_input_tokens": { "type": ["integer", "null"] },
+        "max_output_tokens": { "type": ["integer", "null"] },
+        "max_repeated_tool_calls": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "data": {
+      "type": "object",
+      "properties": {
+        "sensitive_patterns": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "regex"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "regex": { "type": "string" },
+              "description": { "type": "string" },
+              "canary": {
+                "type": "boolean",
+                "description": "A canary match is proof of exfiltration and scores CRITICAL. A shape match (something that merely looks like an email) is weaker evidence and scores one band lower."
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "tools": {
+      "type": "object",
+      "description": "Per-tool permissions. A tool absent from this map is forbidden unless unknown_tools_allowed is true.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "classification": {
+            "type": "string",
+            "enum": [
+              "READ",
+              "SENSITIVE_READ",
+              "WRITE",
+              "FINANCIAL_WRITE",
+              "EXTERNAL_COMMUNICATION",
+              "CODE_EXECUTION",
+              "UNKNOWN"
+            ]
+          },
+          "allowed": { "type": "boolean" },
+          "required_scope": {
+            "type": ["string", "null"],
+            "description": "A scope the backend must verify. A scope enforced only in the system prompt is not enforcement."
+          },
+          "tenant_bound": { "type": "boolean" },
+          "requires_approval": { "type": "boolean" },
+          "recipient_allowlist": { "type": "array", "items": { "type": "string" } },
+          "max_amount": { "type": ["number", "null"] },
+          "redact_arguments": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+
+    "tenancy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enforce_tenant_context": { "type": "boolean" },
+        "cross_tenant_access_allowed": { "type": "boolean" },
+        "tenant_field": { "type": "string" }
+      }
+    },
+
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "require_schema_validation": { "type": "boolean" },
+        "redact_sensitive_data": { "type": "boolean" },
+        "response_schema": { "type": ["object", "null"] }
+      }
+    },
+
+    "unknown_tools_allowed": {
+      "type": "boolean",
+      "default": false,
+      "description": "Deny-by-default. Leave this false unless you genuinely want an agent reaching for capabilities nobody wrote down."
+    }
+  }
+}

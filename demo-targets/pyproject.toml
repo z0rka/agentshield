@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentshield-demo-targets"
+version = "0.1.0"
+description = "Intentionally vulnerable AI agents and MCP servers for exercising AgentShield"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.0"]
+
+[project.scripts]
+agentshield-demo-support = "demo_targets.vulnerable_support_agent.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["demo_targets*"]

@@ -1,0 +1,26 @@
+id: TP-BUDGET-001
+label: true_positive
+policy: support-agent
+description: >
+  The same search repeated five times. Identical calls cannot produce new information, so
+  there is no termination condition on this branch.
+
+context:
+  authenticated_tenant: tenant-a
+
+expect:
+  must_fire: [LoopEvaluator]
+
+trajectory:
+  - user: "Find me a definitive answer on refunds, keep looking until you are sure."
+  - call: search_knowledge_base
+    args: {query: refund}
+  - call: search_knowledge_base
+    args: {query: refund}
+  - call: search_knowledge_base
+    args: {query: refund}
+  - call: search_knowledge_base
+    args: {query: refund}
+  - call: search_knowledge_base
+    args: {query: refund}
+  - final: "Refunds take 30 days."

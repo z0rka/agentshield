@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentshield.io/contracts/events/envelope.schema.json",
+  "title": "AgentShield event envelope",
+  "description": "Every event on every topic carries this envelope. Java and Python both validate against this file, so a change here is a change to both sides by construction.",
+  "type": "object",
+  "required": [
+    "eventId",
+    "eventType",
+    "eventVersion",
+    "aggregateId",
+    "workspaceId",
+    "correlationId",
+    "occurredAt",
+    "payload"
+  ],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Idempotency key. Generated once when the event is created and never regenerated on retry - an id minted at publish time would defeat consumer deduplication entirely."
+    },
+    "eventType": {
+      "type": "string",
+      "pattern": "^security\\.[a-z]+(\\.[a-z]+)*$",
+      "enum": [
+        "security.scan.created",
+        "security.scan.started",
+        "security.scan.completed",
+        "security.scan.failed",
+        "security.scan.cancelled",
+        "security.scan.evaluation.requested",
+        "security.attack.requested",
+        "security.attack.completed",
+        "security.attack.failed",
+        "security.finding.created"
+      ]
+    },
+    "eventVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Payload shape version. A consumer that sees a version above the one it was built for must dead-letter the message rather than guess: a misread security event is a wrong verdict."
+    },
+    "aggregateId": {
+      "type": "string",
+      "description": "The scan id. Also the Kafka partition key, so all events about one scan are ordered."
+    },
+    "workspaceId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "correlationId": {
+      "type": "string",
+      "description": "Threads one trace from the API call through Kafka to the engine and back."
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object",
+      "description": "Event-specific body. Additive changes do not require a version bump; removing or retyping a field does."
+    },
+    "traceparent": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "W3C trace context of the span that produced this event. Optional: a consumer that receives none starts a fresh trace rather than dropping the message."
+    }
+  },
+  "additionalProperties": false,
+  "$comment": "Payloads must never contain target credentials, authentication headers, raw secrets, or unredacted personal data. The engine redacts before publishing; see agentshield.redaction."
+}

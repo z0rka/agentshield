@@ -1,0 +1,134 @@
+spring:
+  application:
+    name: agentshield-control-plane
+
+  datasource:
+    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5432/agentshield}
+    username: ${POSTGRES_USER:agentshield}
+    password: ${POSTGRES_PASSWORD:agentshield}
+    hikari:
+      maximum-pool-size: 16
+      pool-name: agentshield-pool
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Flyway owns the schema. Hibernate validating it catches drift at startup instead of
+      # at 3am on the query that happens to touch the missing column.
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.batch_size: 50
+      hibernate.order_inserts: true
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # StringSerializer, not JsonSerializer. The outbox stores the envelope already
+      # serialised - that is the point of writing it inside the transaction - so the relay
+      # sends a String. JsonSerializer would encode that string *again*, putting a
+      # JSON-escaped string on the topic instead of a JSON object, and every non-Java
+      # consumer would reject it.
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+    consumer:
+      group-id: agentshield-control-plane
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      auto-offset-reset: earliest
+      # At-least-once with explicit acks; consumers are idempotent by event id.
+      enable-auto-commit: false
+      properties:
+        # Symmetric with the producer: consumers receive the raw JSON text and parse it with
+        # Jackson themselves, which is what lets EngineEventConsumer inspect eventVersion
+        # before committing to a payload shape.
+        spring.deserializer.value.delegate.class: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: manual
+
+server:
+  port: ${SERVER_PORT:8080}
+  error:
+    include-message: never
+    include-stacktrace: never
+
+agentshield:
+  # Shared only by the control plane and engine. Override outside local development.
+  internal-token: ${AGENTSHIELD_INTERNAL_TOKEN:local-engine-token}
+  # 32-byte base64 AES-GCM key for target credentials at rest. Required in every profile
+  # except local; the app refuses to start with the placeholder outside dev.
+  credential-key: ${AGENTSHIELD_CREDENTIAL_KEY:}
+  engine:
+    base-url: ${AGENTSHIELD_ENGINE_URL:http://localhost:8081}
+  outbox:
+    poll-interval-ms: 500
+    batch-size: 100
+    max-attempts: 8
+  scan:
+    max-concurrent-per-workspace: 3
+    # One by default. Two scans of the same agent are not merely twice the load: the
+    # indirect-injection suite plants documents in the target, so each scan retrieves the
+    # other's poisoned content and neither trajectory means anything.
+    max-concurrent-per-target: 1
+    default-max-scenarios: 50
+  security:
+    # Deny by default. A control plane that will scan any URL it is handed is a
+    # server-side request forgery primitive with a scheduler attached, and the address
+    # that matters is the cloud metadata endpoint. Local and demo profiles turn this on
+    # below because the demo target runs on loopback; the metadata endpoints stay refused
+    # in every profile.
+    allow-private-targets: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  metrics:
+    tags:
+      application: agentshield-control-plane
+  tracing:
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}/v1/traces
+
+resilience4j:
+  retry:
+    instances:
+      engine:
+        max-attempts: 3
+        wait-duration: 500ms
+        exponential-backoff-multiplier: 2
+  circuitbreaker:
+    instances:
+      engine:
+        sliding-window-size: 20
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+
+logging:
+  level:
+    io.agentshield: INFO
+    org.hibernate.SQL: WARN
+
+---
+# Local development and the demo stack point at targets on loopback, which the guard above
+# refuses by default. Activated by profile so it cannot be inherited by anything deployed.
+spring:
+  config:
+    activate:
+      on-profile: local,demo
+
+agentshield:
+  security:
+    allow-private-targets: true

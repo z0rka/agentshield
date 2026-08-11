@@ -1,0 +1,25 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  - job_name: agentshield-control-plane
+    metrics_path: /actuator/prometheus
+    static_configs:
+      # host.docker.internal so the collector can reach a control plane running in the IDE.
+      - targets: ["host.docker.internal:8080"]
+
+  - job_name: agentshield-security-engine
+    static_configs:
+      - targets: ["host.docker.internal:8081"]
+
+# Metrics worth alerting on once this is deployed:
+#   agentshield_outbox_pending         - a growing backlog means Kafka is unreachable
+#   agentshield_outbox_failed_total     - publish failures
+#   agentshield_scan_duration_seconds   - scans that stopped finishing
+#   agentshield_finding_created_total   - a sudden drop means detection broke, not that
+#                                          the system under test got safer

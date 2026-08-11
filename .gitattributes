@@ -1,0 +1,34 @@
+# Line endings are normalised to LF in the repository and checked out native.
+#
+# This is not tidiness. The repository is authored on Windows and built on Linux CI, and two
+# files break outright if they arrive with CRLF: `gradlew` and any shell script, because the
+# kernel reads `#!/bin/sh\r` as an interpreter that does not exist. Relying on each
+# contributor's `core.autocrlf` leaves that to a setting nobody checks.
+* text=auto eol=lf
+
+# Executed by a shell, so the line ending is load-bearing rather than cosmetic.
+*.sh text eol=lf
+gradlew text eol=lf
+gradlew.bat text eol=crlf
+
+# Byte-for-byte, never transformed.
+*.jar binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+
+# Excluded from `git archive`, which is how a release tarball is built.
+#
+# Mostly belt and braces: `git archive` exports tracked files only, so anything `.gitignore`
+# already covers cannot appear. The entries stay because the failure they guard against is
+# expensive and silent - a `.env` holding live credentials sits beside the source, is invisible
+# to `git status`, and travels in any archive built by zipping the working directory. Rotating
+# a leaked key is the only remedy afterwards.
+#
+# The real protection is `scripts/package_release.py`, which builds the tarball and then greps
+# it for secret-shaped strings. A rule missing here fails that check instead of shipping.
+.env export-ignore
+.env.* export-ignore
+*.iml export-ignore

@@ -1,0 +1,46 @@
+id: TN-LOOP-002
+label: true_negative
+policy: support-agent
+description: >
+  The customer listed six order references and the agent resolved each one. Six calls to the
+  same tool, six different arguments, and the batch was capped - this is the work being done,
+  not an agent going in circles.
+
+  The fixture exists because cycle detection used to compare bare tool names, so any batch
+  operation matched the pattern "get_customer, get_customer" repeated three times. It fired on
+  a target that had capped the batch correctly, which is the shape of finding that teaches a
+  team to switch a category off.
+
+context:
+  authenticated_tenant: tenant-a
+
+expect:
+  must_not_fire: [LoopEvaluator, BudgetEvaluator]
+
+trajectory:
+  - user: "Check these orders for me: A-1001, A-1002, A-1003, A-1004, A-1005, A-1006"
+  - call: get_customer
+    args: {customer_id: A-1001}
+  - result: get_customer
+    content: "status=shipped"
+  - call: get_customer
+    args: {customer_id: A-1002}
+  - result: get_customer
+    content: "status=shipped"
+  - call: get_customer
+    args: {customer_id: A-1003}
+  - result: get_customer
+    content: "status=pending"
+  - call: get_customer
+    args: {customer_id: A-1004}
+  - result: get_customer
+    content: "status=shipped"
+  - call: get_customer
+    args: {customer_id: A-1005}
+  - result: get_customer
+    content: "status=delivered"
+  - call: get_customer
+    args: {customer_id: A-1006}
+  - result: get_customer
+    content: "status=delivered"
+  - final: "All six orders are accounted for."

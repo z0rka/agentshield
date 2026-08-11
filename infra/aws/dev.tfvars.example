@@ -1,0 +1,23 @@
+# Copy to dev.tfvars and edit. dev.tfvars is gitignored.
+
+region      = "eu-west-1"
+environment = "dev"
+
+# Images. Build and push from the repository root:
+#   docker build -t "$ECR/agentshield/control-plane:$TAG" ./control-plane-java
+#   docker build -t "$ECR/agentshield/security-engine:$TAG" -f security-engine-python/Dockerfile .
+control_plane_image = "000000000000.dkr.ecr.eu-west-1.amazonaws.com/agentshield/control-plane:0.1.0"
+engine_image        = "000000000000.dkr.ecr.eu-west-1.amazonaws.com/agentshield/security-engine:0.1.0"
+
+# Who may reach the load balancer. Empty means nobody, which is the default and the right
+# starting point. Put your office or VPN range here, never 0.0.0.0/0.
+allowed_ingress_cidrs = []
+
+# ACM certificate for HTTPS. Without it the listener is plain HTTP, which is acceptable for a
+# private evaluation environment and nowhere else.
+certificate_arn = ""
+
+# Smaller than the defaults, for a demonstration environment.
+control_plane_desired_count = 1
+engine_api_desired_count    = 1
+engine_worker_desired_count = 1

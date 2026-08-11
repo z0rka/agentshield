@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentshield.io/contracts/events/finding-created.schema.json",
+  "title": "security.finding.created payload",
+  "type": "object",
+  "required": ["scanId", "code", "fingerprint", "category", "severity", "title"],
+  "properties": {
+    "scanId": { "type": "string", "format": "uuid" },
+    "scenarioId": { "type": "string" },
+    "code": {
+      "type": "string",
+      "pattern": "^AS-[A-Z]+-[0-9]{3}$",
+      "description": "Human-facing identifier, e.g. AS-INJECTION-004. Derived from the fingerprint so it is stable across scans and machines."
+    },
+    "fingerprint": {
+      "type": "string",
+      "description": "Identity of the defect, not of the exploit. Five payloads reaching the same unguarded tool share one fingerprint, because one fix closes all five. This is what the CI gate diffs against a baseline."
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "DIRECT_PROMPT_INJECTION",
+        "INDIRECT_PROMPT_INJECTION",
+        "TOOL_ABUSE",
+        "DATA_LEAKAGE",
+        "CROSS_TENANT",
+        "APPROVAL_BYPASS",
+        "UNBOUNDED_CONSUMPTION",
+        "IMPROPER_OUTPUT_HANDLING",
+        "TOOL_RESULT_POISONING",
+        "MEMORY_POISONING"
+      ]
+    },
+    "severity": { "type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"] },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "detectedBy": {
+      "type": "string",
+      "description": "Comma-separated deterministic evaluators that confirmed this. Empty means a semantic judge reported it alone, which caps it below CRITICAL."
+    },
+    "occurrences": { "type": "integer", "minimum": 1 },
+    "evidence": {
+      "type": "object",
+      "description": "Redacted. Excerpts name the pattern that matched and show a masked value; they never carry the secret itself.",
+      "properties": {
+        "summary": { "type": "string" },
+        "step_indices": { "type": "array", "items": { "type": "integer" } },
+        "excerpts": { "type": "object" },
+        "tool_names": { "type": "array", "items": { "type": "string" } },
+        "policy_path": { "type": ["string", "null"] }
+      }
+    },
+    "reproduction": {
+      "type": "object",
+      "required": ["scenario_id", "seed"],
+      "properties": {
+        "scenario_id": { "type": "string" },
+        "template_id": { "type": "string" },
+        "seed": { "type": "integer" },
+        "dataset_version": { "type": "string" },
+        "policy_hash": { "type": "string" },
+        "command": { "type": "string" },
+        "minimized": { "type": "boolean" },
+        "probes": { "type": "integer" },
+        "note": { "type": "string" }
+      }
+    },
+    "remediation": {
+      "type": "object",
+      "properties": {
+        "summary": { "type": "string" },
+        "controls": { "type": "array", "items": { "type": "string" } },
+        "example": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

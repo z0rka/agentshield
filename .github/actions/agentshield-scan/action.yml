@@ -1,0 +1,204 @@
+# A composite action, not a Docker one. Docker actions pull an image on every run and pin the
+# scanner to whatever was published; composite runs the code in the checkout, so a pull request
+# that changes an evaluator is gated by the evaluator it changed. For a security tool that is
+# the difference between testing your code and testing last month's release.
+name: AgentShield scan
+description: Run an AgentShield security scan against a running agent and gate the build on it.
+
+inputs:
+  target:
+    description: Base URL of the running agent under test.
+    required: true
+  policy:
+    description: Path to the security policy YAML.
+    required: true
+  baseline:
+    description: >-
+      Baseline JSON. Findings already in it do not fail the build, so an existing backlog does
+      not block every pull request while new regressions still do. Omit on the first run.
+    required: false
+    default: ""
+  suite:
+    description: Attack suites, space separated. Omit to let the threat model choose.
+    required: false
+    default: ""
+  fail-on:
+    description: Lowest severity that fails the build (critical, high, medium, low).
+    required: false
+    default: high
+  tenant:
+    description: >-
+      Tenant to authenticate as. Optional: targets implementing the inspection protocol report
+      the principal each session acts as, and that is what the scan uses.
+    required: false
+    default: ""
+  adapter:
+    description: Target adapter (rest_agentshield, rest_generic, mcp).
+    required: false
+    default: rest_agentshield
+  judge-cassette:
+    description: >-
+      Recorded judge responses. Set this to include the LLM judges without an API key and
+      without per-build cost. A case absent from the cassette is reported unmeasured, never
+      clean.
+    required: false
+    default: ""
+  timeout:
+    description: Per-scenario timeout in seconds.
+    required: false
+    default: "30"
+  artifact-dir:
+    description: Where the Markdown report, JSON report and baseline are written.
+    required: false
+    default: artifacts
+  comment-on-pr:
+    description: >-
+      Post the summary as a pull request comment. Needs `permissions: pull-requests: write`.
+      Off by default because an action that silently needs a permission you did not grant fails
+      confusingly.
+    required: false
+    default: "false"
+  working-directory:
+    description: Directory containing the AgentShield checkout.
+    required: false
+    default: "."
+
+outputs:
+  passed:
+    description: "'true' when the gate passed. Read this in preference to the step's exit code."
+    value: ${{ steps.scan.outputs.passed }}
+  exit-code:
+    description: "0 clean, 1 findings at or above the gate, 2 the scan could not be completed."
+    value: ${{ steps.scan.outputs.exit-code }}
+  new-critical:
+    description: Critical findings not present in the baseline.
+    value: ${{ steps.scan.outputs.new-critical }}
+  new-high:
+    description: High findings not present in the baseline.
+    value: ${{ steps.scan.outputs.new-high }}
+  resolved:
+    description: Baseline findings that no longer reproduce.
+    value: ${{ steps.scan.outputs.resolved }}
+  scenarios-executed:
+    description: >-
+      How many scenarios produced a usable trajectory. Zero is a failed scan, not a clean one,
+      and the CLI exits 2 with the cause named.
+    value: ${{ steps.scan.outputs.scenarios-executed }}
+  report:
+    description: Path to the Markdown report.
+    value: ${{ steps.scan.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install AgentShield
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        python -m pip install --quiet --upgrade pip
+        pip install --quiet -e ./security-engine-python -e ./cli
+
+    - name: Scan
+      id: scan
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -o pipefail
+        mkdir -p "${{ inputs.artifact-dir }}"
+
+        args=(
+          --target "${{ inputs.target }}"
+          --policy "${{ inputs.policy }}"
+          --adapter "${{ inputs.adapter }}"
+          --fail-on "${{ inputs.fail-on }}"
+          --timeout "${{ inputs.timeout }}"
+          --report "${{ inputs.artifact-dir }}/report.md"
+          --json "${{ inputs.artifact-dir }}/report.json"
+        )
+        [ -n "${{ inputs.baseline }}" ]       && args+=(--baseline "${{ inputs.baseline }}")
+        [ -n "${{ inputs.tenant }}" ]         && args+=(--tenant "${{ inputs.tenant }}")
+        [ -n "${{ inputs.judge-cassette }}" ] && args+=(--judge-cassette "${{ inputs.judge-cassette }}")
+        for suite in ${{ inputs.suite }}; do args+=(--suite "$suite"); done
+
+        # `ci` prints one JSON object and nothing else, so it can be piped straight into the
+        # step outputs. The exit code is captured, never allowed to abort the step: the
+        # summary and the report have to be published even when - especially when - the gate
+        # fails.
+        set +e
+        agentshield ci "${args[@]}" | tee "${{ inputs.artifact-dir }}/ci-result.json"
+        code=${PIPESTATUS[0]}
+        set -e
+
+        result="${{ inputs.artifact-dir }}/ci-result.json"
+        get() { python -c "import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ''))" "$result" "$1"; }
+
+        {
+          echo "exit-code=$code"
+          echo "passed=$(get passed | tr '[:upper:]' '[:lower:]')"
+          echo "new-critical=$(get newCritical)"
+          echo "new-high=$(get newHigh)"
+          echo "resolved=$(get resolved)"
+          echo "scenarios-executed=$(get scenariosExecuted)"
+          echo "report=${{ inputs.artifact-dir }}/report.md"
+        } >> "$GITHUB_OUTPUT"
+
+        exit $code
+
+    - name: Summary
+      # `always()`: a gate whose report only appears when it passes is a gate nobody can debug.
+      if: always()
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        {
+          echo "## AgentShield"
+          echo
+          case "${{ steps.scan.outputs.exit-code }}" in
+            0) echo "**Passed.** No new findings at or above \`${{ inputs.fail-on }}\`." ;;
+            1) echo "**Failed.** New findings at or above \`${{ inputs.fail-on }}\`." ;;
+            2) echo "**Could not scan.** The run produced no coverage, so no verdict is claimed." ;;
+            *) echo "**Errored.** Exit code \`${{ steps.scan.outputs.exit-code }}\`." ;;
+          esac
+          echo
+          echo "| | |"
+          echo "|---|---|"
+          echo "| Scenarios executed | ${{ steps.scan.outputs.scenarios-executed }} |"
+          echo "| New critical | ${{ steps.scan.outputs.new-critical }} |"
+          echo "| New high | ${{ steps.scan.outputs.new-high }} |"
+          echo "| Resolved | ${{ steps.scan.outputs.resolved }} |"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Comment on the pull request
+      if: always() && inputs.comment-on-pr == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # One comment per pull request, edited in place. Appending a new one every push turns a
+        # useful signal into noise people mute.
+        marker="<!-- agentshield -->"
+        body="$marker
+        **AgentShield:** exit \`${{ steps.scan.outputs.exit-code }}\`, \
+        ${{ steps.scan.outputs.scenarios-executed }} scenario(s) executed, \
+        ${{ steps.scan.outputs.new-critical }} new critical, \
+        ${{ steps.scan.outputs.new-high }} new high, \
+        ${{ steps.scan.outputs.resolved }} resolved."
+
+        existing=$(gh pr view "${{ github.event.number }}" --json comments \
+          --jq ".comments[] | select(.body | startswith(\"$marker\")) | .url" | head -1)
+
+        if [ -n "$existing" ]; then
+          gh api --method PATCH "${existing/https:\/\/github.com\//https://api.github.com/repos/}" \
+            -f body="$body" >/dev/null || gh pr comment "${{ github.event.number }}" --body "$body"
+        else
+          gh pr comment "${{ github.event.number }}" --body "$body"
+        fi
+
+    - name: Upload reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: agentshield-reports
+        path: ${{ inputs.working-directory }}/${{ inputs.artifact-dir }}/
+        if-no-files-found: warn

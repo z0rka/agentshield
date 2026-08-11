@@ -1,0 +1,59 @@
+# The action from a consumer's point of view: boot an agent, scan it, gate the build.
+#
+# It runs here against the demo target so the action itself is covered by CI. An action nobody
+# executes is a README with YAML syntax highlighting, and the failure modes worth catching -
+# a broken output name, a shell quoting bug, a step that skips when the gate fails - only show
+# up when it actually runs.
+name: AgentShield gate
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    name: Gate on the hardened target
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Only needed with `comment-on-pr: true`. Declared here so the example is complete.
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Boot the agent under test
+        run: |
+          pip install --quiet -e ./demo-targets
+          python -m demo_targets.vulnerable_support_agent --port 8091 --secure &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8091/health && break
+            sleep 1
+          done
+
+      - name: Scan
+        id: agentshield
+        uses: ./.github/actions/agentshield-scan
+        with:
+          target: http://127.0.0.1:8091
+          policy: ./datasets/policies/support-agent.yml
+          suite: owasp-agentic
+          fail-on: high
+          comment-on-pr: "false"
+
+      # The hardened target is clean, so a pass is the expected outcome and anything else is a
+      # regression in either the target or the action. Asserting on the output, over
+      # trusting the step to have failed, also catches an action that reports success while
+      # producing nothing.
+      - name: The gate must have actually run
+        if: always()
+        run: |
+          test "${{ steps.agentshield.outputs.passed }}" = "true"
+          test "${{ steps.agentshield.outputs.exit-code }}" = "0"
+          test "${{ steps.agentshield.outputs.scenarios-executed }}" -gt 0

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentShield</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🛡</text></svg>">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark" aria-hidden="true">▚</span>
+      <span>AgentShield</span>
+    </div>
+    <div class="topbar-meta" id="scan-meta"></div>
+    <div id="gate" class="gate" role="status"></div>
+  </header>
+
+  <main id="layout" class="layout" hidden>
+    <aside class="sidebar">
+      <section class="counts" id="counts" aria-label="Findings by severity"></section>
+
+      <section class="coverage" id="coverage"></section>
+
+      <div class="filters">
+        <label class="visually-hidden" for="filter">Filter findings</label>
+        <input id="filter" type="search" placeholder="Filter by code, title, tool…" autocomplete="off">
+      </div>
+
+      <nav class="findings" id="findings" aria-label="Findings"></nav>
+    </aside>
+
+    <section class="detail" id="detail" tabindex="-1">
+      <p class="empty">Select a finding.</p>
+    </section>
+  </main>
+
+  <div id="loading" class="loading">
+    <p>Loading <code>report.json</code>…</p>
+  </div>
+
+  <div id="error" class="error-panel" hidden>
+    <h1>No report loaded</h1>
+    <p id="error-message"></p>
+    <p class="hint">
+      Produce one with
+      <code>agentshield scan --target … --policy … --json artifacts/report.json</code>,
+      then serve this page with
+      <code>agentshield ui --report artifacts/report.json</code>.
+    </p>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

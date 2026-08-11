@@ -1,0 +1,303 @@
+name: agentshield
+
+x-hardened-service: &hardened-service
+  restart: unless-stopped
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-engine-build: &engine-build
+  context: ..
+  dockerfile: security-engine-python/Dockerfile
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agentshield
+      POSTGRES_USER: agentshield
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentshield}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentshield -d agentshield"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  kafka:
+    image: apache/kafka:3.8.0
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:19092,CONTROLLER://:9093,EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    ports:
+      - "127.0.0.1:9092:9092"
+    networks:
+      - backend
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  engine-api:
+    <<: *hardened-service
+    image: agentshield/security-engine:local
+    build: *engine-build
+    command: ["python", "-m", "agentshield.api.app"]
+    environment:
+      AGENTSHIELD_ENGINE_PORT: 8081
+      AGENTSHIELD_MAX_CONCURRENT_RUNS: ${AGENTSHIELD_MAX_CONCURRENT_RUNS:-10}
+      AGENTSHIELD_INTERNAL_TOKEN: ${AGENTSHIELD_INTERNAL_TOKEN:-local-engine-token}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SERVICE_NAME: agentshield-engine-api
+    ports:
+      - "127.0.0.1:8081:8081"
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  control-plane:
+    <<: *hardened-service
+    image: agentshield/control-plane:local
+    build:
+      context: ../control-plane-java
+      dockerfile: Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-local}
+      POSTGRES_URL: jdbc:postgresql://postgres:5432/agentshield
+      POSTGRES_USER: agentshield
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentshield}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      AGENTSHIELD_ENGINE_URL: http://engine-api:8081
+      AGENTSHIELD_INTERNAL_TOKEN: ${AGENTSHIELD_INTERNAL_TOKEN:-local-engine-token}
+      AGENTSHIELD_CREDENTIAL_KEY: ${AGENTSHIELD_CREDENTIAL_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - edge
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      engine-api:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+  engine-worker:
+    <<: *hardened-service
+    image: agentshield/security-engine:local
+    build: *engine-build
+    command: ["agentshield-engine-worker"]
+    environment:
+      AGENTSHIELD_CONTROL_PLANE_URL: http://control-plane:8080
+      AGENTSHIELD_INTERNAL_TOKEN: ${AGENTSHIELD_INTERNAL_TOKEN:-local-engine-token}
+      AGENTSHIELD_KAFKA_GROUP_ID: agentshield-security-engine
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      AGENTSHIELD_MAX_CONCURRENT_RUNS: ${AGENTSHIELD_MAX_CONCURRENT_RUNS:-10}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SERVICE_NAME: agentshield-engine-worker
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENTSHIELD_JUDGE_MODEL: ${AGENTSHIELD_JUDGE_MODEL:-claude-sonnet-5}
+    networks:
+      - backend
+    read_only: true
+    healthcheck:
+      disable: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    depends_on:
+      kafka:
+        condition: service_healthy
+      control-plane:
+        condition: service_healthy
+    stop_grace_period: 60s
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.109.0
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel/collector.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:8889:8889"
+    networks:
+      - backend
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"
+    networks:
+      - backend
+      - edge
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    volumes:
+      - ./otel/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - backend
+      - edge
+
+  vulnerable-support-agent:
+    profiles: ["demo"]
+    <<: *hardened-service
+    image: agentshield/demo-target:local
+    build:
+      context: ..
+      dockerfile: infra/demo-target.Dockerfile
+    command:
+      - python
+      - -m
+      - demo_targets.vulnerable_support_agent
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8090"
+    ports:
+      - "127.0.0.1:8090:8090"
+    networks:
+      - backend
+      - edge
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+  hardened-support-agent:
+    profiles: ["demo"]
+    <<: *hardened-service
+    image: agentshield/demo-target:local
+    build:
+      context: ..
+      dockerfile: infra/demo-target.Dockerfile
+    environment:
+      AGENTSHIELD_DEMO_SECURE: "1"
+    command:
+      - python
+      - -m
+      - demo_targets.vulnerable_support_agent
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8090"
+      - --secure
+    ports:
+      - "127.0.0.1:8091:8090"
+    networks:
+      - backend
+      - edge
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+  vulnerable-rag-agent:
+    profiles: ["demo"]
+    <<: *hardened-service
+    image: agentshield/demo-target:local
+    build:
+      context: ..
+      dockerfile: infra/demo-target.Dockerfile
+    command:
+      - python
+      - -m
+      - demo_targets.vulnerable_rag_agent
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8092"
+    ports:
+      - "127.0.0.1:8092:8092"
+    networks:
+      - backend
+      - edge
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+  async-support-agent:
+    profiles: ["demo"]
+    <<: *hardened-service
+    image: agentshield/demo-target:local
+    build:
+      context: ..
+      dockerfile: infra/demo-target.Dockerfile
+    command:
+      - python
+      - -m
+      - demo_targets.async_support_agent
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8095"
+    ports:
+      - "127.0.0.1:8095:8095"
+    networks:
+      - backend
+      - edge
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+  cli:
+    profiles: ["tools"]
+    image: agentshield/cli:local
+    build:
+      context: ..
+      dockerfile: cli/Dockerfile
+    networks:
+      - backend
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+networks:
+  edge:
+  backend:
+
+volumes:
+  postgres-data:

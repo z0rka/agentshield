@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+
+# Java / Gradle
+.gradle/
+build/
+!src/**/build/
+out/
+*.class
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Local state
+# Every .env variant, then the template back. Ignoring only `.env` leaves `.env.local`
+# and `.env.prod` committable, which is the same mistake in a different filename.
+.env
+.env.*
+!.env.example
+*.log
+*.local.yml
+artifacts/
+reports/
+.agentshield/
+
+# Terraform
+# State holds resource attributes in plaintext - endpoints, ARNs, and anything a provider
+# returns - so it is never committed. tfvars carries account ids and allowed CIDRs; the
+# `.example` is the committed template, same rule as .env above.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+backend.hcl
+crash.log
+
+# OS
+.DS_Store
+Thumbs.db

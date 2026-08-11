@@ -1,0 +1,73 @@
+# OpenTelemetry collector.
+#
+# One trace runs from the Java API through Kafka into the Python engine, down to the target
+# adapter, the tested tool, the evaluator and the resulting finding. The collector is where
+# that trace gets scrubbed before it is stored - a security tool that leaks the secrets it
+# is hunting into its own traces has failed in the most embarrassing way available.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+
+  # Belt and braces. The application redacts before emitting; this makes sure a new span
+  # attribute added in a hurry cannot become a leak.
+  attributes/scrub:
+    actions:
+      - key: http.request.header.authorization
+        action: delete
+      - key: http.request.header.x-agentshield-token
+        action: delete
+      - key: target.authentication
+        action: delete
+      - key: target.api_key
+        action: delete
+      - key: db.statement
+        action: delete
+      - pattern: ^(.*\.)?(password|secret|token|api_key|credential)(\..*)?$
+        action: delete
+
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: local
+        action: upsert
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/scrub, resource, batch]
+      exporters: [otlp/jaeger]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [prometheus]
+  telemetry:
+    logs:
+      level: warn

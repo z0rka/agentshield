@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentshield.io/contracts/events/attack-completed.schema.json",
+  "title": "security.attack.completed payload",
+  "description": "A concrete scenario, its run accounting and a trajectory redacted before Kafka.",
+  "type": "object",
+  "required": ["scanId", "scenario", "run", "steps"],
+  "properties": {
+    "scanId": { "type": "string", "format": "uuid" },
+    "scenario": {
+      "type": "object",
+      "required": ["key", "category", "name", "seed", "status"],
+      "properties": {
+        "key": { "type": "string" },
+        "category": { "type": "string" },
+        "name": { "type": "string" },
+        "templateId": { "type": "string" },
+        "payload": { "type": "object" },
+        "expectedPolicy": { "type": "object" },
+        "seed": { "type": "integer" },
+        "status": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "run": {
+      "type": "object",
+      "required": ["attempt", "status", "inputTokens", "outputTokens", "estimatedCostUsd"],
+      "properties": {
+        "attempt": { "type": "integer", "minimum": 1 },
+        "status": { "type": "string" },
+        "targetSessionId": { "type": ["string", "null"] },
+        "inputTokens": { "type": "integer", "minimum": 0 },
+        "outputTokens": { "type": "integer", "minimum": 0 },
+        "estimatedCostUsd": { "type": "number", "minimum": 0 },
+        "durationSeconds": { "type": "number", "minimum": 0 },
+        "error": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sequenceNumber", "stepType", "inputRedacted", "outputRedacted", "occurredAt"],
+        "properties": {
+          "sequenceNumber": { "type": "integer", "minimum": 0 },
+          "stepType": { "type": "string" },
+          "toolName": { "type": ["string", "null"] },
+          "inputRedacted": { "type": "string" },
+          "outputRedacted": { "type": "string" },
+          "durationMs": { "type": ["integer", "null"] },
+          "traceId": { "type": ["string", "null"] },
+          "occurredAt": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$comment": "Raw target responses and credentials are forbidden. Both redacted fields are safe to persist and return to the UI."
+}

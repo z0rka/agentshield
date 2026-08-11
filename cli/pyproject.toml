@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentshield-cli"
+version = "0.1.0"
+description = "Command line client for AgentShield"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "agentshield-engine>=0.1.0",
+]
+
+[project.scripts]
+agentshield = "agentshield_cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["agentshield_cli*"]

@@ -1,0 +1,384 @@
+# The control plane's HTTP contract.
+#
+# Hand-written and checked, not generated. A spec produced from the running application always
+# agrees with it, which makes it documentation and not a contract - it cannot catch a route
+# that was renamed, and a CI client written against it breaks silently on the next refactor.
+# `contracts/validate.py` compares every path here against the annotations in the controllers
+# and fails when they disagree, so a rename shows up as a red build.
+#
+# Only the endpoints a caller outside the system uses. The engine's private dispatch endpoints
+# are absent on purpose: they are an internal detail secured by a shared token and are not
+# part of anything anyone should build against.
+
+openapi: 3.1.0
+
+info:
+  title: AgentShield Control Plane
+  version: "1.0.0"
+  description: >
+    Scan lifecycle, targets, policies and findings for automated security testing of AI agents.
+    The control plane is the source of truth for scan status; the security engine reports and
+    never decides.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: projects
+  - name: targets
+  - name: policies
+  - name: scans
+  - name: findings
+  - name: ci
+    description: Machine-readable gate for pipelines. Authenticated by CI token, not a session.
+
+security:
+  - basicAuth: []
+
+paths:
+  /api/projects:
+    post:
+      tags: [projects]
+      summary: Create a project
+      responses:
+        "201": { description: Created }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    get:
+      tags: [projects]
+      summary: List projects in the caller's workspace
+      responses:
+        "200": { description: OK }
+
+  /api/projects/{projectId}:
+    get:
+      tags: [projects]
+      parameters: [{ $ref: "#/components/parameters/ProjectId" }]
+      responses:
+        "200": { description: OK }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/projects/{projectId}/targets:
+    post:
+      tags: [targets]
+      summary: Register a target
+      description: >
+        The base URL is resolved and refused when it points inside the network the control
+        plane runs in. Cloud metadata endpoints are refused in every configuration.
+      parameters: [{ $ref: "#/components/parameters/ProjectId" }]
+      responses:
+        "201": { description: Created }
+        "400": { description: Invalid target configuration, including a refused base URL }
+    get:
+      tags: [targets]
+      parameters: [{ $ref: "#/components/parameters/ProjectId" }]
+      responses:
+        "200": { description: OK }
+
+  /api/targets/{targetId}:
+    get:
+      tags: [targets]
+      summary: Read one target
+      description: Credentials are never returned; the stored configuration is encrypted at rest.
+      parameters: [{ $ref: "#/components/parameters/TargetId" }]
+      responses:
+        "200": { description: OK }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/targets/{targetId}/validate:
+    post:
+      tags: [targets]
+      summary: Probe the target and report the capabilities it advertises
+      parameters: [{ $ref: "#/components/parameters/TargetId" }]
+      responses:
+        "200": { description: OK }
+
+  /api/projects/{projectId}/policies:
+    post:
+      tags: [policies]
+      summary: Create a policy version
+      description: >
+        Policies are immutable. Editing one creates a new version with a new content hash;
+        findings pin themselves to the hash so history stays checkable.
+      parameters: [{ $ref: "#/components/parameters/ProjectId" }]
+      responses:
+        "201": { description: Created }
+    get:
+      tags: [policies]
+      parameters: [{ $ref: "#/components/parameters/ProjectId" }]
+      responses:
+        "200": { description: OK }
+
+  /api/policies/{policyId}:
+    get:
+      tags: [policies]
+      parameters:
+        - name: policyId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: OK }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/projects/{projectId}/scans:
+    post:
+      tags: [scans]
+      summary: Start a scan
+      description: >
+        The scan row and its outbox event commit in one transaction. Replaying the same
+        Idempotency-Key returns the original scan with 200 and never starts a second.
+      parameters:
+        - { $ref: "#/components/parameters/ProjectId" }
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateScanRequest" }
+      responses:
+        "201": { description: Scan created }
+        "200": { description: The same idempotency key was replayed; the original scan is returned }
+        "409":
+          description: >
+            The workspace or the target already has as many scans in flight as it is allowed.
+            Concurrent scans of one target contaminate each other's planted content.
+
+  /api/scans/{scanId}:
+    get:
+      tags: [scans]
+      parameters: [{ $ref: "#/components/parameters/ScanId" }]
+      responses:
+        "200": { description: OK }
+        "404":
+          description: >
+            Absent, including when the scan belongs to another workspace. Reported as missing
+            and not as forbidden, so the API cannot be used to enumerate other tenants.
+
+  /api/scans/{scanId}/cancel:
+    post:
+      tags: [scans]
+      parameters: [{ $ref: "#/components/parameters/ScanId" }]
+      responses:
+        "202": { description: Cancellation requested }
+
+  /api/scans/{scanId}/rerun:
+    post:
+      tags: [scans]
+      parameters: [{ $ref: "#/components/parameters/ScanId" }]
+      responses:
+        "201": { description: A new scan with the same target and policy }
+
+  /api/scans/{scanId}/events:
+    get:
+      tags: [scans]
+      summary: Server-sent progress stream
+      parameters: [{ $ref: "#/components/parameters/ScanId" }]
+      responses:
+        "200":
+          description: text/event-stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  /api/scans/{scanId}/findings:
+    get:
+      tags: [findings]
+      parameters: [{ $ref: "#/components/parameters/ScanId" }]
+      responses:
+        "200": { description: OK }
+
+  /api/findings/{findingId}:
+    get:
+      tags: [findings]
+      parameters: [{ $ref: "#/components/parameters/FindingId" }]
+      responses:
+        "200": { description: OK }
+
+  /api/findings/{findingId}/trajectory:
+    get:
+      tags: [findings]
+      summary: The steps this finding's evidence indices point at
+      description: >-
+        Server-redacted. The stored columns are the redacted ones, so there is no unredacted
+        variant this endpoint could expose. Empty when the scenario never produced a run.
+      parameters: [{ $ref: "#/components/parameters/FindingId" }]
+      responses:
+        "200": { description: OK }
+
+  /api/findings/{findingId}/mark-resolved:
+    post:
+      tags: [findings]
+      parameters: [{ $ref: "#/components/parameters/FindingId" }]
+      responses:
+        "200": { description: OK }
+
+  /api/findings/{findingId}/create-regression:
+    post:
+      tags: [findings]
+      summary: Pin this finding as a regression case
+      parameters: [{ $ref: "#/components/parameters/FindingId" }]
+      responses:
+        "201": { description: Regression baseline entry created }
+
+  /api/projects/{projectId}/schedules:
+    post:
+      tags: [schedules]
+      summary: Create a recurring scan
+      description: >-
+        Requires RUN_SCAN, never WRITE. Creating a schedule creates every scan it will ever
+        start, without anyone approving them one at a time.
+      parameters: [{ $ref: "#/components/parameters/ProjectId" }]
+      responses:
+        "201": { description: Created }
+    get:
+      tags: [schedules]
+      parameters: [{ $ref: "#/components/parameters/ProjectId" }]
+      responses:
+        "200": { description: OK }
+
+  /api/schedules/{scheduleId}/enabled:
+    post:
+      tags: [schedules]
+      summary: Pause or resume a schedule
+      parameters:
+        - name: scheduleId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: OK }
+
+  /api/schedules/{scheduleId}:
+    delete:
+      tags: [schedules]
+      parameters:
+        - name: scheduleId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Deleted }
+
+  /api/audit:
+    get:
+      tags: [audit]
+      summary: Recent activity in the caller's workspace
+      description: >-
+        No workspace parameter: the scope comes from the authenticated principal. An audit
+        endpoint that accepts a workspace id is a way to read another tenant's history.
+      responses:
+        "200": { description: OK }
+
+  /api/ci/scans:
+    post:
+      tags: [ci]
+      summary: Start a scan from a pipeline
+      responses:
+        "201": { description: Created }
+
+  /api/ci/scans/{scanId}:
+    get:
+      tags: [ci]
+      parameters: [{ $ref: "#/components/parameters/ScanId" }]
+      responses:
+        "200": { description: OK }
+
+  /api/ci/scans/{scanId}/result:
+    get:
+      tags: [ci]
+      summary: The gate decision
+      parameters: [{ $ref: "#/components/parameters/ScanId" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CiResult" }
+
+  /api/ci/scans/{scanId}/baseline:
+    post:
+      tags: [ci]
+      summary: Record this scan's findings as the baseline to diff against
+      parameters: [{ $ref: "#/components/parameters/ScanId" }]
+      responses:
+        "201": { description: Baseline recorded }
+
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+
+  parameters:
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    TargetId:
+      name: targetId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ScanId:
+      name: scanId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    FindingId:
+      name: findingId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    Forbidden:
+      description: The caller's role does not permit this action
+    NotFound:
+      description: Absent, or belonging to another workspace
+
+  schemas:
+    CreateScanRequest:
+      type: object
+      required: [targetId, policyId]
+      properties:
+        targetId: { type: string, format: uuid }
+        policyId: { type: string, format: uuid }
+        suites:
+          type: array
+          description: Attack categories to run. Omitted, the threat model selects them.
+          items:
+            type: string
+            enum:
+              - DIRECT_PROMPT_INJECTION
+              - INDIRECT_PROMPT_INJECTION
+              - TOOL_ABUSE
+              - DATA_LEAKAGE
+              - CROSS_TENANT
+              - APPROVAL_BYPASS
+              - UNBOUNDED_CONSUMPTION
+              - IMPROPER_OUTPUT_HANDLING
+              - TOOL_RESULT_POISONING
+              - MEMORY_POISONING
+        maxScenarios: { type: integer, minimum: 1, default: 50 }
+
+    CiResult:
+      type: object
+      required: [passed, newCritical, newHigh, resolved, exitCode]
+      properties:
+        passed: { type: boolean }
+        newCritical: { type: integer }
+        newHigh: { type: integer }
+        resolved: { type: integer }
+        exitCode:
+          type: integer
+          description: 0 clean, 1 findings at or above the gate, 2 the scan could not be completed.
+        scanId: { type: string, format: uuid }
+        scenariosExecuted: { type: integer }

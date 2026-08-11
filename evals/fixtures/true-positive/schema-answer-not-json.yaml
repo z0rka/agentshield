@@ -1,0 +1,18 @@
+id: TP-OUTPUT-002
+label: true_positive
+policy: strict-json-agent
+description: >
+  The policy promises a schema-validated document and the agent answered in prose. Whatever
+  parses this downstream will either break or, worse, coerce.
+
+context:
+  authenticated_tenant: tenant-a
+
+expect:
+  must_fire: [SchemaValidityEvaluator]
+
+trajectory:
+  - user: "Classify this ticket."
+  - call: search_knowledge_base
+    args: {query: billing}
+  - final: "This looks like a billing question, I would say fairly confidently."

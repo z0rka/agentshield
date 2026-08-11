@@ -1,0 +1,176 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    name: Security engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "./security-engine-python[dev,otel,kafka,mcp,graph]" -e ./cli -e ./demo-targets
+
+      - name: Lint
+        run: ruff check security-engine-python cli demo-targets contracts scripts evals
+
+      - name: House style
+        run: python scripts/check_prose.py
+
+      - name: Test
+        run: pytest security-engine-python/tests -q
+
+      - name: Validate contracts
+        run: python contracts/validate.py
+
+      - name: Evaluator quality
+        # Fails when an evaluator drops below the precision gate or loses fixture coverage.
+        run: python evals/run.py --require-coverage --verbose
+
+      - name: Corpus coverage
+        # Fails on any template that flags the *hardened* demo target, and ratchets the
+        # demonstrated count so the corpus cannot grow its unproven tail while the headline
+        # template number goes up.
+        run: python scripts/check_corpus_coverage.py --require-demonstrated 48
+
+  self-scan:
+    name: Scan the demo target
+    runs-on: ubuntu-latest
+    needs: engine
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e "./security-engine-python[graph]" -e ./cli -e ./demo-targets
+
+      # AgentShield scanning its own demo target on every build. This is the regression
+      # suite for the *scanner*: if a refactor stops the flagship indirect injection from
+      # reproducing, the build goes red here instead of in a demo six weeks later.
+      - name: Start the vulnerable target
+        run: |
+          python -m demo_targets.vulnerable_support_agent --port 8090 &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8090/health && break
+            sleep 1
+          done
+
+      - name: Scan (expects findings)
+        run: |
+          set +e
+          agentshield scan \
+            --target http://127.0.0.1:8090 \
+            --policy ./datasets/policies/support-agent.yml \
+            --suite owasp-agentic \
+            --report artifacts/report.md \
+            --json artifacts/report.json \
+            --save-baseline artifacts/baseline-vulnerable.json
+          # Exit 1 is the expected outcome: the target is intentionally broken. Exit 0 would
+          # mean detection regressed, and exit 2 that the scan never reached the target.
+          test $? -eq 1
+
+      - name: Start the hardened target
+        run: |
+          python -m demo_targets.vulnerable_support_agent --port 8091 --secure &
+          for _ in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8091/health && break
+            sleep 1
+          done
+
+      - name: Regression (expects the attack blocked)
+        run: |
+          agentshield regression \
+            --target http://127.0.0.1:8091 \
+            --policy ./datasets/policies/support-agent.yml \
+            --suite owasp-agentic \
+            --baseline artifacts/baseline-vulnerable.json
+
+      # The demo script prints transcripts with numbers in them. Numbers in a document are a
+      # claim, and this one was already stale once - it described 32 scenarios and 14 findings
+      # long after the corpus had moved to 50 and 19, because nothing checked.
+      - name: The demo script still describes a real run
+        run: python scripts/demo.py --check
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scan-reports
+          path: artifacts/
+
+  control-plane:
+    name: Control plane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build and test
+        working-directory: control-plane-java
+        # Testcontainers needs a Docker daemon; ubuntu-latest has one.
+        run: ./gradlew build --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: control-plane-test-results
+          path: control-plane-java/build/reports/tests/
+
+  smoke:
+    name: Multi-process smoke
+    runs-on: ubuntu-latest
+    needs: [engine, control-plane]
+    # Boots PostgreSQL, Kafka, the control plane, the worker and a target as separate
+    # processes. Every other job stubs at least one boundary; this one stubs none, which is
+    # also why it is the slowest and runs last.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install the engine with Kafka support
+        # `otel` is not optional here despite being an optional extra: step 10 asserts a
+        # trace spanning both services, and without the exporter the engine emits none.
+        run: pip install -e "./security-engine-python[kafka,otel,graph]" -e ./cli -e ./demo-targets
+
+      - name: Smoke
+        run: python scripts/smoke_multiprocess.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-logs
+          path: artifacts/smoke/
